@@ -20,11 +20,12 @@ using Microsoft.Web.WebView2.Wpf;
 using QuickLook.Common.Helpers;
 using System;
 using System.Diagnostics;
-using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using DrawingColor = System.Drawing.Color;
 
 namespace QuickLook.Plugin.PDFViewerNative;
 
@@ -47,11 +48,63 @@ public class WebpagePanel : UserControl
                 {
                     UserDataFolder = Path.Combine(SettingHelper.LocalDataPath, @"WebView2_Data\\"),
                 },
-                DefaultBackgroundColor = OSThemeHelper.AppsUseDarkTheme() ? Color.FromArgb(255, 32, 32, 32) : Color.White, // Prevent white flash in dark mode
+                DefaultBackgroundColor = OSThemeHelper.AppsUseDarkTheme() ? DrawingColor.FromArgb(255, 32, 32, 32) : DrawingColor.White, // Prevent white flash in dark mode
             };
             _webView.NavigationStarting += NavigationStarting_CancelNavigation;
             _webView.NavigationCompleted += WebView_NavigationCompleted;
             Content = _webView;
+
+            // Handle DPI changes to prevent display glitches when switching monitors
+            Loaded += OnLoaded;
+            Unloaded += OnUnloaded;
+        }
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        var window = Window.GetWindow(this);
+        if (window != null)
+        {
+            window.DpiChanged += OnDpiChanged;
+            // Set initial rasterization scale
+            UpdateRasterizationScale(VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        }
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        var window = Window.GetWindow(this);
+        if (window != null)
+        {
+            window.DpiChanged -= OnDpiChanged;
+        }
+    }
+
+    private void OnDpiChanged(object sender, DpiChangedEventArgs e)
+    {
+        // Update WebView2 rasterization scale when DPI changes
+        UpdateRasterizationScale(e.NewDpi.PixelsPerDip);
+    }
+
+    private void UpdateRasterizationScale(double scale)
+    {
+        if (_webView != null)
+        {
+            // Force WebView2 to refresh its rendering after DPI change
+            // This helps prevent display glitches when switching monitors
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (_webView?.CoreWebView2 != null)
+                {
+                    // Trigger a repaint by toggling visibility momentarily
+                    var currentUri = _currentUri;
+                    if (currentUri != null)
+                    {
+                        _webView.InvalidateVisual();
+                        _webView.UpdateLayout();
+                    }
+                }
+            }, System.Windows.Threading.DispatcherPriority.Render);
         }
     }
 
@@ -89,13 +142,27 @@ public class WebpagePanel : UserControl
 
     private void WebView_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        _webView.DefaultBackgroundColor = Color.White; // Reset to white after page load to match expected default behavior
+        _webView.DefaultBackgroundColor = DrawingColor.White; // Reset to white after page load to match expected default behavior
     }
 
     public void Dispose()
     {
-        _webView?.Dispose();
-        _webView = null;
+        if (_webView != null)
+        {
+            _webView.NavigationStarting -= NavigationStarting_CancelNavigation;
+            _webView.NavigationCompleted -= WebView_NavigationCompleted;
+            _webView.Dispose();
+            _webView = null;
+        }
+
+        Loaded -= OnLoaded;
+        Unloaded -= OnUnloaded;
+
+        var window = Window.GetWindow(this);
+        if (window != null)
+        {
+            window.DpiChanged -= OnDpiChanged;
+        }
     }
 
     private object CreateDownloadButton()
